@@ -4,6 +4,10 @@ extends Node3D
 
 var _overlays: Array = []
 var sold_today: int = 0
+# Двери: {root, leaf, block, open, angle}. Открыто = -65°, закрыто = 0°.
+var _doors: Array = []
+const DOOR_OPEN := -1.1345
+const DOOR_CLOSED := 0.0
 
 func _ready() -> void:
 	var inv: Node = get_node_or_null("/root/Inventory")
@@ -28,6 +32,7 @@ func _ready() -> void:
 			eb.connect("signal_sold", _on_sold)
 		if not eb.is_connected("day_ended", _on_day_ended):
 			eb.connect("day_ended", _on_day_ended)
+	_setup_doors()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("interact"):
@@ -43,6 +48,64 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _process(_delta: float) -> void:
 	_apply_night_calibration()
+	_tick_doors(_delta)
+
+func _setup_doors() -> void:
+	# Собирает двери группы "door": створка DoorLeaf + блок-коллизия (выкл, двери открыты).
+	for n in get_tree().get_nodes_in_group("door"):
+		if not (n is Node3D):
+			continue
+		var root: Node3D = n
+		var leaf := _find_leaf(root)
+		if leaf == null:
+			push_warning("Дверь без створки: " + str(root.name))
+			continue
+		leaf.rotation.y = DOOR_OPEN
+		var body := StaticBody3D.new()
+		body.name = "DoorBlock"
+		var col := CollisionShape3D.new()
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(1.8, 3.2, 0.3)
+		col.shape = shape
+		col.position = Vector3(0, 1.6, 0)
+		col.disabled = true
+		body.add_child(col)
+		root.add_child(body)
+		_doors.append({"root": root, "leaf": leaf, "block": col, "open": true})
+
+func _find_leaf(n: Node) -> Node3D:
+	if "Leaf" in n.name and n is Node3D:
+		return n
+	for c in n.get_children():
+		var f := _find_leaf(c)
+		if f != null:
+			return f
+	return null
+
+func _door_of(n: Node) -> Dictionary:
+	var cur: Node = n
+	for i in 3:
+		if cur == null:
+			return {}
+		if cur.is_in_group("door"):
+			for d in _doors:
+				if (d as Dictionary)["root"] == cur:
+					return d
+			return {}
+		cur = cur.get_parent()
+	return {}
+
+func _toggle_door(d: Dictionary) -> void:
+	d["open"] = not bool(d["open"])
+	var col: CollisionShape3D = d["block"]
+	col.set_deferred("disabled", bool(d["open"]))
+
+func _tick_doors(delta: float) -> void:
+	for d in _doors:
+		var dd := d as Dictionary
+		var leaf: Node3D = dd["leaf"]
+		var target: float = DOOR_OPEN if bool(dd["open"]) else DOOR_CLOSED
+		leaf.rotation.y = move_toward(float(leaf.rotation.y), target, 2.5 * delta)
 
 func _try_interact() -> void:
 	var ray: RayCast3D = get_node_or_null("Player/Head/Camera3D/InteractionRay") as RayCast3D
@@ -55,6 +118,10 @@ func _try_interact() -> void:
 	if col == null or not (col is Node):
 		return
 	var node: Node = col as Node
+	var door := _door_of(node)
+	if not door.is_empty():
+		_toggle_door(door)
+		return
 	if node.is_in_group("term1"):
 		_open_ui(0)
 	elif node.is_in_group("term2"):
